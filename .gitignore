@@ -1,0 +1,24 @@
+# Build output
+.gradle/
+build/
+/app/build/
+*.apk
+*.aab
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+local.properties
+captures/
+.kotlin/
+
+# Secrets: never commit these (Systems Brief, section 9)
+google-services.json
+*service-account*.json
+*.keystore
+*.jks
+.env
+
+# Seed script dependencies
+node_modules/

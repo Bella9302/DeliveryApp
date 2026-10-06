@@ -1,0 +1,89 @@
+rules_version = '2';
+
+// Security rules for the complaint chatbot app.
+// Deploy with: firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function role() { return get(/databases/$(database)/documents/users/$(uid())).data.role; }
+    function isStaff() { return signedIn() && role() in ['agent', 'admin']; }
+    function isAdmin() { return signedIn() && role() == 'admin'; }
+    function onlyChanges(fields) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(fields); }
+
+    // Users read their own profile. New accounts can only be customers;
+    // other roles are set by an admin or the seed script.
+    match /users/{userId} {
+      allow read: if signedIn() && (userId == uid() || isStaff());
+      allow create: if signedIn() && userId == uid() && request.resource.data.role == 'customer';
+      allow update, delete: if isAdmin();
+    }
+
+    // Restaurants and menus. Owners manage their own menu items (Module B).
+    match /restaurants/{restaurantId} {
+      function isOwner() { return signedIn() && get(/databases/$(database)/documents/restaurants/$(restaurantId)).data.ownerId == uid(); }
+
+      allow read: if signedIn();
+      allow write: if isAdmin();
+
+      match /menuItems/{itemId} {
+        allow read: if signedIn();
+        allow create, update: if (isOwner() || isAdmin())
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && request.resource.data.priceCents is int && request.resource.data.priceCents > 0;
+        allow delete: if isOwner() || isAdmin();
+      }
+    }
+
+    match /drivers/{driverId} {
+      allow read: if signedIn() && (resource.data.userId == uid() || isStaff());
+      allow write: if isAdmin();
+    }
+
+    // Orders come from the seed script. Customers read their own; the app never writes them.
+    match /orders/{orderId} {
+      allow read: if signedIn() && (resource.data.customerId == uid() || isStaff());
+      allow write: if isAdmin();
+    }
+
+    // Complaints (Module A).
+    match /complaints/{complaintId} {
+      function ownsIt() { return signedIn() && resource.data.customerId == uid(); }
+
+      allow read: if ownsIt() || isStaff();
+      allow create: if signedIn() && request.resource.data.customerId == uid()
+        && request.resource.data.status in ['logged', 'escalated'];
+      // Customers may edit the description while it is logged; the chatbot may move it to escalated or resolved.
+      allow update: if isStaff() || (ownsIt()
+        && onlyChanges(['description', 'status', 'resolution', 'updatedAt'])
+        && request.resource.data.status in ['logged', 'escalated', 'resolved']
+        && (request.resource.data.description == resource.data.description || resource.data.status == 'logged'));
+      allow delete: if isAdmin() || (ownsIt() && resource.data.status == 'logged');
+
+      match /messages/{messageId} {
+        function parentOwner() { return get(/databases/$(database)/documents/complaints/$(complaintId)).data.customerId; }
+        allow read: if signedIn() && (parentOwner() == uid() || isStaff());
+        allow create: if signedIn() && (parentOwner() == uid() || isStaff());
+        allow delete: if signedIn() && (parentOwner() == uid() || isAdmin());
+      }
+    }
+
+    // Refunds. The app may approve only refunds inside the auto-approve limit
+    // (half of a missing item worth under R15, so at most R7.50) with approvedBy "system".
+    // Anything larger is created as "requested" and decided by an agent.
+    match /refunds/{refundId} {
+      allow read: if signedIn() && (resource.data.customerId == uid() || isStaff());
+      allow create: if signedIn() && request.resource.data.customerId == uid() && (
+        (request.resource.data.status == 'approved' && request.resource.data.approvedBy == 'system'
+          && request.resource.data.amountCents is int && request.resource.data.amountCents <= 750)
+        || (request.resource.data.status == 'requested' && request.resource.data.approvedBy == null)
+      );
+      allow update: if isStaff() && resource.data.status == 'requested'
+        && onlyChanges(['status', 'approvedBy'])
+        && request.resource.data.status in ['approved', 'rejected']
+        && request.resource.data.approvedBy == uid();
+      allow delete: if isAdmin();
+    }
+  }
+}

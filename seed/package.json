@@ -1,0 +1,11 @@
+{
+  "name": "deliveryapp-seed",
+  "private": true,
+  "description": "Loads test users, restaurants and orders into Firestore. No real payments.",
+  "scripts": {
+    "seed": "node seed_firestore.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.4.0"
+  }
+}
