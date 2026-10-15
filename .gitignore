@@ -1,0 +1,23 @@
+# Gradle and Android Studio
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Firebase config and credentials stay out of the repository
+app/google-services.json
+service-account*.json
+*.keystore
+*.jks
+.env
+
+# Seed script
+seed/node_modules/
+
+# OS files
+.DS_Store

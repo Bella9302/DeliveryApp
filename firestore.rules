@@ -1,0 +1,122 @@
+rules_version = '2';
+
+// Security rules for eats. The app's validation layer checks the business rules first;
+// these rules make sure a modified app still cannot read or change other people's data.
+//
+// Limitation: automatic refunds are written by the customer's app, so the rules can only cap
+// their size (see AUTO_REFUND_MAX below). Moving refunds to a Cloud Function would close that gap.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function profile() { return get(/databases/$(database)/documents/users/$(uid())).data; }
+    function role() { return profile().role; }
+    function isStaff() { return signedIn() && role() in ['agent', 'admin']; }
+    function isAdmin() { return signedIn() && role() == 'admin'; }
+
+    // Largest automatic refund in cents: 50% of a claim under R15. Keep in sync with RefundPolicy.kt.
+    function autoRefundMax() { return 750; }
+
+    match /users/{userId} {
+      allow read: if signedIn() && (userId == uid() || isStaff());
+      // Sign-up creates a customer. Other roles are given by an admin or the seed script.
+      allow create: if signedIn() && userId == uid()
+        && request.resource.data.role == 'customer'
+        && request.resource.data.keys().hasOnly(['firstName', 'lastName', 'email', 'mobile', 'role', 'createdAt']);
+      allow update: if isAdmin() || (signedIn() && userId == uid()
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'restaurantId']));
+      allow delete: if isAdmin();
+    }
+
+    match /restaurants/{restaurantId} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+
+      function canEditMenu() {
+        return isAdmin() || (signedIn() && role() == 'restaurant' && profile().restaurantId == restaurantId);
+      }
+
+      function validMenuItem(d) {
+        return d.keys().hasOnly(['name', 'description', 'priceCents', 'available'])
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 60
+          && d.description is string && d.description.size() <= 200
+          && d.priceCents is int && d.priceCents > 0 && d.priceCents <= 1000000
+          && d.available is bool;
+      }
+
+      match /menuItems/{itemId} {
+        allow read: if signedIn();
+        allow create, update: if canEditMenu() && validMenuItem(request.resource.data);
+        allow delete: if canEditMenu();
+      }
+    }
+
+    match /drivers/{driverId} {
+      allow read: if isStaff() || (signedIn() && driverId == uid());
+      allow write: if isAdmin();
+    }
+
+    // Orders are created by the seed script. Placing orders from the app is out of the current scope.
+    match /orders/{orderId} {
+      allow read: if signedIn() && (
+        resource.data.customerId == uid()
+        || resource.data.driverId == uid()
+        || isStaff()
+        || (role() == 'restaurant' && profile().restaurantId == resource.data.restaurantId));
+      allow write: if isAdmin();
+    }
+
+    match /complaints/{complaintId} {
+      function owns() { return signedIn() && resource.data.customerId == uid(); }
+
+      allow read: if owns() || isStaff();
+
+      allow create: if signedIn()
+        && request.resource.data.customerId == uid()
+        && request.resource.data.status in ['logged', 'escalated']
+        && request.resource.data.assignedAgentId == null
+        && (request.resource.data.orderId == null
+            || get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.customerId == uid());
+
+      // Customers may edit the description, escalate, or resolve through an automatic refund.
+      allow update: if isStaff() || (owns()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['description', 'status', 'resolution', 'updatedAt'])
+        && (request.resource.data.status == resource.data.status
+            || request.resource.data.status in ['escalated', 'resolved']));
+
+      allow delete: if isAdmin() || (owns() && resource.data.status == 'logged');
+
+      match /messages/{messageId} {
+        function parent() { return get(/databases/$(database)/documents/complaints/$(complaintId)).data; }
+        function canSee() { return signedIn() && (parent().customerId == uid() || isStaff()); }
+
+        allow read, create: if canSee();
+        allow update: if false;
+        // Needed when a customer deletes their logged complaint.
+        allow delete: if isAdmin() || (signedIn() && parent().customerId == uid() && parent().status == 'logged');
+      }
+    }
+
+    match /refunds/{refundId} {
+      allow read: if signedIn() && (resource.data.customerId == uid() || isStaff());
+
+      allow create: if signedIn()
+        && request.resource.data.customerId == uid()
+        && get(/databases/$(database)/documents/orders/$(request.resource.data.orderId)).data.customerId == uid()
+        && get(/databases/$(database)/documents/complaints/$(request.resource.data.complaintId)).data.customerId == uid()
+        && request.resource.data.amountCents is int
+        && request.resource.data.amountCents > 0
+        && (
+          (request.resource.data.status == 'approved'
+            && request.resource.data.approvedBy == 'system'
+            && request.resource.data.amountCents <= autoRefundMax())
+          || (request.resource.data.status == 'requested' && request.resource.data.approvedBy == null)
+        );
+
+      // Only agents and admins decide on refunds; their user ID is recorded as approvedBy.
+      allow update: if isStaff();
+      allow delete: if false;
+    }
+  }
+}
