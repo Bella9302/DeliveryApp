@@ -161,9 +161,12 @@ class ActionGateway(
             is RefundDecision.AutoApprove -> {
                 val line = order.item(action.menuItemId)!!
                 val amount = formatRand(decision.amountCents)
+                // Resolve the complaint only once every item in it has a refund, so the next item can still be refunded.
+                val refundedIds = existing.filter { it.status != RefundStatus.REJECTED }.map { it.menuItemId }.toSet() + line.menuItemId
+                val allItemsRefunded = complaint.items.all { it.menuItemId in refundedIds }
                 val refundId = refunds.createAutoRefund(
                     newRefund(complaint, order, line.menuItemId, line.name, action.quantity!!, decision.amountCents, RefundStatus.APPROVED, Refund.APPROVED_BY_SYSTEM),
-                    resolution = "Automatic refund of $amount for ${action.quantity} x ${line.name}.",
+                    resolution = if (allItemsRefunded) "Automatic refund of $amount for ${action.quantity} x ${line.name}." else null,
                 )
                 ActionOutcome.Done(
                     name,
@@ -172,7 +175,7 @@ class ActionGateway(
                         "refundId" to refundId,
                         "amount" to amount,
                         "refundStatus" to RefundStatus.APPROVED.value,
-                        "complaintStatus" to ComplaintStatus.RESOLVED.value,
+                        "complaintStatus" to (if (allItemsRefunded) ComplaintStatus.RESOLVED else complaint.status).value,
                         "note" to "Refunds are credited within 3 to 5 working days.",
                     ),
                 )

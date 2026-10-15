@@ -36,21 +36,23 @@ class RefundRepository(private val db: FirebaseFirestore) {
     fun observeAll(): Flow<List<Refund>> = refunds.observe { it.toRefund() }
 
     /**
-     * Saves a system-approved refund and resolves its complaint in one batch,
+     * Saves a system-approved refund. When [resolution] is given, the complaint is resolved in the same batch,
      * so the customer never sees one without the other.
      */
-    suspend fun createAutoRefund(refund: Refund, resolution: String): String {
+    suspend fun createAutoRefund(refund: Refund, resolution: String?): String {
         val ref = refunds.document()
         val batch = db.batch()
         batch.set(ref, refund.toNewMap() + mapOf(Fields.CREATED_AT to FieldValue.serverTimestamp(), Fields.DECIDED_AT to FieldValue.serverTimestamp()))
-        batch.update(
-            db.collection(Collections.COMPLAINTS).document(refund.complaintId),
-            mapOf(
-                Fields.STATUS to ComplaintStatus.RESOLVED.value,
-                "resolution" to resolution,
-                Fields.UPDATED_AT to FieldValue.serverTimestamp(),
-            ),
-        )
+        if (resolution != null) {
+            batch.update(
+                db.collection(Collections.COMPLAINTS).document(refund.complaintId),
+                mapOf(
+                    Fields.STATUS to ComplaintStatus.RESOLVED.value,
+                    "resolution" to resolution,
+                    Fields.UPDATED_AT to FieldValue.serverTimestamp(),
+                ),
+            )
+        }
         batch.commit().await()
         return ref.id
     }
